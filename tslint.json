@@ -1,0 +1,21 @@
+{
+  "defaultSeverity": "error",
+  "extends": [],
+  "jsRules": {},
+  "rules": {
+    "no-console": false,
+    "array-type": false,
+    "comment-format": false,
+    "only-arrow-functions": false,
+    "max-classes-per-file": false,
+    "no-bitwise": false,
+    "prefer-for-of": {
+      "severity": "warn"
+    },
+    "no-unused-expression": false,
+    "variable-name": {
+      "severity": "warn"
+    }
+  },
+  "rulesDirectory": []
+}
