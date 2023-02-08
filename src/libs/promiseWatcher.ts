@@ -19,13 +19,15 @@ export function promisifyHoc<A extends ReadonlyArray<unknown>, R>(
 ) {
   return (...i: A) => {
     const ctx = (asyncLocalStorage.getStore() as string[]) || [];
-    logger("begin: ", [...ctx, name]);
+    const seqId = ctx.length;
+    const wrappedCtx = [...ctx, { seqId, action: name, params: [...i] }];
+    logger("begin: ", wrappedCtx);
 
-    const res = asyncLocalStorage.run([...ctx, name], () =>
+    const res = asyncLocalStorage.run(wrappedCtx, () =>
       promiseWatcher(f(...i))
     );
 
-    logger("end: ", [...ctx, name]);
+    logger("end: ", seqId);
 
     return res;
   };
