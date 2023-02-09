@@ -1,19 +1,23 @@
 import { promisify } from "util";
 import debug from "debug";
-import { RuntimeContext } from "./libs/runtimeContext";
+import { ERuntimeMode, RuntimeContext, TraceLog } from "./libs/runtimeContext";
 const logger = debug("main");
 
 const waitMs = promisify(setTimeout);
 
 async function processError(ctx: RuntimeContext) {
   const waitMsAction = ctx.wrapAction("waitMs", waitMs);
-  const doInc = ctx.wrapAction("doInc", async () => {
-    count++;
-    if (count > 2) throw new Error("😪");
+  const doInc = ctx.wrapAction(
+    "doInc",
+    async () => {
+      count++;
+      if (count > 2) throw new Error("😪");
 
-    await waitMsAction(1000);
-    return count;
-  });
+      await waitMsAction(1000);
+      return count;
+    },
+    { canFastForward: false }
+  );
   let count = 0;
 
   logger("1");
@@ -28,32 +32,131 @@ async function processError(ctx: RuntimeContext) {
 async function processSuccess(ctx: RuntimeContext) {
   let count = 0;
   const waitMsAction = ctx.wrapAction("waitMs", waitMs);
-  const doInc = ctx.wrapAction("doInc", async () => {
-    count++;
-    if (count > 2) throw new Error("😪");
+  const doInc = ctx.wrapAction(
+    "doInc",
+    async () => {
+      count++;
+      await waitMsAction(1000);
+      return count;
+    },
+    { canFastForward: false }
+  );
 
-    await waitMsAction(1000);
-    return count;
-  });
-
-  logger("1");
+  logger("1", count);
   await doInc();
-  logger("2");
+  logger("2", count);
   await doInc();
-  logger("3");
+  logger("3", count);
   await doInc();
-  logger("3");
+  logger("4", count);
 }
 
 async function main() {
-  const ctx = new RuntimeContext();
+  // await runAndCapture();
+  // await runReplayOnly();
+  await runReplayAndContinue();
+}
+main();
+async function runAndCapture() {
+  const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_AND_RUN);
   console.log("process start");
   try {
-    await processError(ctx);
+    await processSuccess(ctx);
   } catch (error) {
     console.log("process end with error", error);
   }
-
   console.log("process traces", ctx.getTraces());
 }
-main();
+async function runReplayOnly() {
+  const prevCtx: TraceLog[] = [
+    {
+      seqId: 1,
+      action: "doInc",
+      params: [],
+      result: 1,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 2,
+      action: "waitMs",
+      params: [1000],
+      result: undefined,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 3,
+      action: "doInc",
+      params: [],
+      result: 2,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 4,
+      action: "waitMs",
+      params: [1000],
+      result: undefined,
+      error: undefined,
+      isSuccess: true,
+    },
+  ];
+
+  const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_ONLY);
+  ctx.restore(prevCtx);
+  console.log("process start");
+  try {
+    await processSuccess(ctx);
+  } catch (error) {
+    console.log("process end with error", error);
+  }
+  console.log("process traces", ctx.getTraces());
+}
+
+async function runReplayAndContinue() {
+  const prevCtx: TraceLog[] = [
+    {
+      seqId: 1,
+      action: "doInc",
+      params: [],
+      result: 1,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 2,
+      action: "waitMs",
+      params: [1000],
+      result: undefined,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 3,
+      action: "doInc",
+      params: [],
+      result: 2,
+      error: undefined,
+      isSuccess: true,
+    },
+    {
+      seqId: 4,
+      action: "waitMs",
+      params: [1000],
+      result: undefined,
+      error: undefined,
+      isSuccess: true,
+    },
+  ];
+
+  const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_AND_RUN);
+  ctx.restore(prevCtx);
+  console.log("process start");
+  try {
+    await processSuccess(ctx);
+  } catch (error) {
+    console.log("process end with error", error);
+  }
+  console.log("process traces", ctx.getTraces());
+}

@@ -7,3 +7,13 @@
 - engine
     v8
     worker
+
+
+mode restore
+    ----
+        run -> check logs -> resolve result | throw error
+
+mode restore & continue
+        run -> check logs -> resolve result 
+                                | throw error (retry ?)
+        write log continue run
