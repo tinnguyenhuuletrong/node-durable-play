@@ -1,0 +1,91 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`runtime - record simpleError 1`] = `
+[
+  {
+    "action": "doInc",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [],
+    "result": 1,
+    "seqId": 1,
+  },
+  {
+    "action": "waitMs",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [
+      1000,
+    ],
+    "result": undefined,
+    "seqId": 2,
+  },
+  {
+    "action": "doInc",
+    "error": [Error: 😪],
+    "isSuccess": false,
+    "params": [],
+    "result": undefined,
+    "seqId": 3,
+  },
+]
+`;
+
+exports[`runtime - record simpleSuccess 1`] = `
+[
+  {
+    "action": "doInc",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [],
+    "result": 1,
+    "seqId": 1,
+  },
+  {
+    "action": "waitMs",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [
+      1000,
+    ],
+    "result": undefined,
+    "seqId": 2,
+  },
+  {
+    "action": "doInc",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [],
+    "result": 2,
+    "seqId": 3,
+  },
+  {
+    "action": "waitMs",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [
+      1000,
+    ],
+    "result": undefined,
+    "seqId": 4,
+  },
+  {
+    "action": "doInc",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [],
+    "result": 3,
+    "seqId": 5,
+  },
+  {
+    "action": "waitMs",
+    "error": undefined,
+    "isSuccess": true,
+    "params": [
+      1000,
+    ],
+    "result": undefined,
+    "seqId": 6,
+  },
+]
+`;

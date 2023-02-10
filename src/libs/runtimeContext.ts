@@ -1,4 +1,5 @@
 import debug from "debug";
+import Deferred from "./deferred";
 const logger = debug("utils");
 
 export type TraceLog = {
@@ -30,12 +31,21 @@ export class RuntimeContext {
   private traces: TraceLog[] = [];
   private seqId: number = 0;
   private mode: ERuntimeMode;
+  private queryFuncs: Map<string, Function>;
+
+  private runtimeReplayDeferred: Deferred;
+
   constructor(mode: ERuntimeMode) {
     this.mode = mode;
+    this.queryFuncs = new Map();
   }
 
   restore(traces: TraceLog[]) {
     this.traces = traces;
+  }
+
+  destroy() {
+    this.queryFuncs.clear();
   }
 
   getTraces() {
@@ -43,7 +53,42 @@ export class RuntimeContext {
   }
 
   private blockPromise() {
+    this?.runtimeReplayDeferred.resolve();
     return new Promise(() => {});
+  }
+
+  public async run(f: (ctx: RuntimeContext) => Promise<any>) {
+    if (this.mode !== ERuntimeMode.EREPLAY_AND_RUN)
+      throw new Error(
+        "only available with runtime mode ERuntimeMode.EREPLAY_AND_RUN"
+      );
+
+    await f(this);
+  }
+
+  public async replay(f: (ctx: RuntimeContext) => Promise<any>) {
+    if (this.mode !== ERuntimeMode.EREPLAY_ONLY)
+      throw new Error(
+        "only available with runtime mode ERuntimeMode.EREPLAY_ONLY"
+      );
+
+    this.runtimeReplayDeferred = new Deferred();
+
+    const asyncRun = async () => {
+      f(this);
+    };
+
+    asyncRun();
+    return this.runtimeReplayDeferred.promise;
+  }
+
+  doQuery(name: string, args: any[]) {
+    const f = this.queryFuncs.get(name);
+    return f(...args);
+  }
+
+  registerQueryFunc(name: string, f: Function) {
+    this.queryFuncs.set(name, f);
   }
 
   wrapAction<A extends ReadonlyArray<unknown>, R>(

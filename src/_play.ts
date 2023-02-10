@@ -1,3 +1,5 @@
+process.env.DEBUG = "*";
+
 import { promisify } from "util";
 import debug from "debug";
 import { ERuntimeMode, RuntimeContext, TraceLog } from "./libs/runtimeContext";
@@ -41,6 +43,9 @@ async function processSuccess(ctx: RuntimeContext) {
     },
     { canFastForward: false }
   );
+  ctx.registerQueryFunc("getCount", () => {
+    return count;
+  });
 
   logger("1", count);
   await doInc();
@@ -53,20 +58,24 @@ async function processSuccess(ctx: RuntimeContext) {
 
 async function main() {
   // await runAndCapture();
-  // await runReplayOnly();
-  await runReplayAndContinue();
+  await runReplayOnly();
+  // await runReplayAndContinue();
 }
 main();
 async function runAndCapture() {
   const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_AND_RUN);
   console.log("process start");
   try {
-    await processSuccess(ctx);
+    await ctx.run(processSuccess);
   } catch (error) {
     console.log("process end with error", error);
   }
   console.log("process traces", ctx.getTraces());
+
+  const res = await ctx.doQuery("getCount", []);
+  console.log("Query getCount:", res);
 }
+
 async function runReplayOnly() {
   const prevCtx: TraceLog[] = [
     {
@@ -107,11 +116,13 @@ async function runReplayOnly() {
   ctx.restore(prevCtx);
   console.log("process start");
   try {
-    await processSuccess(ctx);
+    await ctx.replay(processSuccess);
   } catch (error) {
     console.log("process end with error", error);
   }
-  console.log("process traces", ctx.getTraces());
+
+  const res = await ctx.doQuery("getCount", []);
+  console.log("Query getCount:", res);
 }
 
 async function runReplayAndContinue() {
@@ -154,9 +165,11 @@ async function runReplayAndContinue() {
   ctx.restore(prevCtx);
   console.log("process start");
   try {
-    await processSuccess(ctx);
+    await ctx.run(processSuccess);
   } catch (error) {
     console.log("process end with error", error);
   }
-  console.log("process traces", ctx.getTraces());
+
+  const res = await ctx.doQuery("getCount", []);
+  console.log("Query getCount:", res);
 }
