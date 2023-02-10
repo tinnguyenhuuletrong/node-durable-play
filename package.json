@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev:play": "ts-node src/_play.ts",
+    "dev:play": "ts-node play/_play.ts",
     "build": "tsc",
     "test": "jest"
   },

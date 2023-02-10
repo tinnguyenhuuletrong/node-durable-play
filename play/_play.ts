@@ -2,7 +2,7 @@ process.env.DEBUG = "*";
 
 import { promisify } from "util";
 import debug from "debug";
-import { ERuntimeMode, RuntimeContext, TraceLog } from "./libs/runtimeContext";
+import { ERuntimeMode, RuntimeContext, TraceLog } from "../src";
 const logger = debug("main");
 
 const waitMs = promisify(setTimeout);
@@ -57,8 +57,8 @@ async function processSuccess(ctx: RuntimeContext) {
 }
 
 async function main() {
-  // await runAndCapture();
-  await runReplayOnly();
+  await runAndCapture();
+  // await runReplayOnly();
   // await runReplayAndContinue();
 }
 main();
