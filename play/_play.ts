@@ -7,38 +7,35 @@ const logger = debug("main");
 
 const waitMs = promisify(setTimeout);
 
-async function processError(ctx: RuntimeContext) {
+async function processParallelSuccess(ctx: RuntimeContext) {
+  let count = 0;
   const waitMsAction = ctx.wrapAction("waitMs", waitMs);
-  const doInc = ctx.wrapAction(
-    "doInc",
+  const doJobA = ctx.wrapAction(
+    "doJobA",
     async () => {
-      count++;
-      if (count > 2) throw new Error("😪");
-
-      await waitMsAction(1000);
+      await waitMsAction(2000);
+      count += 3;
+      logger("doJobA. inc by", 3);
       return count;
     },
     { canFastForward: false }
   );
-  let count = 0;
-
-  logger("1");
-  await doInc();
-  logger("2");
-  await doInc();
-  logger("3");
-  await doInc();
-  logger("3");
-}
-
-async function processSuccess(ctx: RuntimeContext) {
-  let count = 0;
-  const waitMsAction = ctx.wrapAction("waitMs", waitMs);
-  const doInc = ctx.wrapAction(
-    "doInc",
+  const doJobB = ctx.wrapAction(
+    "doJobB",
     async () => {
-      count++;
-      await waitMsAction(1000);
+      await waitMsAction(3000);
+      count += 5;
+      logger("doJobB. inc by", 5);
+      return count;
+    },
+    { canFastForward: false }
+  );
+  const doJobC = ctx.wrapAction(
+    "doJobC",
+    async () => {
+      await waitMsAction(100);
+      count += 1;
+      logger("doJobC. inc by", 1);
       return count;
     },
     { canFastForward: false }
@@ -47,26 +44,14 @@ async function processSuccess(ctx: RuntimeContext) {
     return count;
   });
 
-  logger("1", count);
-  await doInc();
-  logger("2", count);
-  await doInc();
-  logger("3", count);
-  await doInc();
-  logger("4", count);
+  await Promise.all([doJobA(), doJobB(), doJobC()]);
 }
 
-async function main() {
-  await runAndCapture();
-  // await runReplayOnly();
-  // await runReplayAndContinue();
-}
-main();
 async function runAndCapture() {
   const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_AND_RUN);
   console.log("process start");
   try {
-    await ctx.run(processSuccess);
+    await ctx.run(processParallelSuccess);
   } catch (error) {
     console.log("process end with error", error);
   }
@@ -74,102 +59,29 @@ async function runAndCapture() {
 
   const res = await ctx.doQuery("getCount", []);
   console.log("Query getCount:", res);
+
+  return ctx.getTraces();
 }
 
-async function runReplayOnly() {
-  const prevCtx: TraceLog[] = [
-    {
-      seqId: 1,
-      action: "doInc",
-      params: [],
-      result: 1,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 2,
-      action: "waitMs",
-      params: [1000],
-      result: undefined,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 3,
-      action: "doInc",
-      params: [],
-      result: 2,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 4,
-      action: "waitMs",
-      params: [1000],
-      result: undefined,
-      error: undefined,
-      isSuccess: true,
-    },
-  ];
-
+async function runReplayOnly(prevCtx: TraceLog[]) {
   const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_ONLY);
   ctx.restore(prevCtx);
-  console.log("process start");
+  console.log("replay start");
   try {
-    await ctx.replay(processSuccess);
+    await ctx.replay(processParallelSuccess);
   } catch (error) {
     console.log("process end with error", error);
   }
+  console.log("replay finish");
 
   const res = await ctx.doQuery("getCount", []);
   console.log("Query getCount:", res);
 }
 
-async function runReplayAndContinue() {
-  const prevCtx: TraceLog[] = [
-    {
-      seqId: 1,
-      action: "doInc",
-      params: [],
-      result: 1,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 2,
-      action: "waitMs",
-      params: [1000],
-      result: undefined,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 3,
-      action: "doInc",
-      params: [],
-      result: 2,
-      error: undefined,
-      isSuccess: true,
-    },
-    {
-      seqId: 4,
-      action: "waitMs",
-      params: [1000],
-      result: undefined,
-      error: undefined,
-      isSuccess: true,
-    },
-  ];
-
-  const ctx = new RuntimeContext(ERuntimeMode.EREPLAY_AND_RUN);
-  ctx.restore(prevCtx);
-  console.log("process start");
-  try {
-    await ctx.run(processSuccess);
-  } catch (error) {
-    console.log("process end with error", error);
-  }
-
-  const res = await ctx.doQuery("getCount", []);
-  console.log("Query getCount:", res);
+async function main() {
+  logger("--------------RUN-----------------");
+  const traces = await runAndCapture();
+  logger("--------------REPLAY-----------------");
+  await runReplayOnly(traces);
 }
+main();

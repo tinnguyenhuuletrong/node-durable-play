@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "async_hooks";
 import debug from "debug";
 import Deferred from "./deferred";
 const logger = debug("utils");
@@ -9,6 +10,7 @@ export type TraceLog = {
   isSuccess: boolean;
   result: any;
   error: any;
+  parentSeqId?: number;
 };
 export enum ERuntimeMode {
   EREPLAY_ONLY = 1,
@@ -34,6 +36,7 @@ export class RuntimeContext {
   private queryFuncs: Map<string, Function>;
 
   private runtimeReplayDeferred: Deferred;
+  private asyncLocalStorage = new AsyncLocalStorage();
 
   constructor(mode: ERuntimeMode) {
     this.mode = mode;
@@ -54,6 +57,7 @@ export class RuntimeContext {
 
   private blockPromise() {
     this?.runtimeReplayDeferred.resolve();
+    logger("promise blocked");
     return new Promise(() => {});
   }
 
@@ -75,7 +79,8 @@ export class RuntimeContext {
     this.runtimeReplayDeferred = new Deferred();
 
     const asyncRun = async () => {
-      f(this);
+      await f(this);
+      this.runtimeReplayDeferred.resolve();
     };
 
     asyncRun();
@@ -145,14 +150,18 @@ export class RuntimeContext {
         result: undefined,
         error: undefined,
         isSuccess: false,
+        parentSeqId: this.asyncLocalStorage.getStore() as number,
       };
       this.traces.push(newItm);
 
-      logger("begin", seqId, name);
+      const runCtx = `seqId:${newItm.seqId} parentSeqId:${newItm.parentSeqId}`;
+      logger("begin", runCtx, name);
 
       let funcReturn: any;
       try {
-        funcReturn = await f(...i);
+        funcReturn = await this.asyncLocalStorage.run(this.seqId, async () => {
+          return f(...i);
+        });
         newItm.isSuccess = true;
         newItm.result = funcReturn;
       } catch (error) {
@@ -161,7 +170,7 @@ export class RuntimeContext {
         throw error;
       }
 
-      logger("end", seqId, { result: newItm.result, error: newItm.error });
+      logger("end", runCtx, { result: newItm.result, error: newItm.error });
 
       return funcReturn;
     };
