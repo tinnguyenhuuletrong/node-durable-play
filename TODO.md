@@ -17,3 +17,22 @@ mode restore & continue
         run -> check logs -> resolve result 
                                 | throw error (retry ?)
         write log continue run
+
+
+
+
+CheckOutProcess 
+
+await createOrderId
+await lockInventory {maxRetry:0}
+
+try {
+  await payment {maxRetry:2}
+  await waitForPacking {maxTime: 1Day}
+  await createShipId {maxRetry:2, uuid: xxx}
+  await waitForShip {maxTime: 1Day}
+  await markDone
+} catch {
+  await releaseLockInventory
+}
+

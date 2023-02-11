@@ -1,3 +1,4 @@
+import { hrtime } from "process";
 import { AsyncLocalStorage } from "async_hooks";
 import debug from "debug";
 import Deferred from "./deferred";
@@ -11,15 +12,11 @@ export type TraceLog = {
   result: any;
   error: any;
   parentSeqId?: number;
+  children: TraceLog[];
+  _t: string;
 };
-export enum ERuntimeMode {
-  EREPLAY_ONLY = 1,
-  EREPLAY_AND_RUN = 2,
-}
 
-export type wrapActionOpts = {
-  canFastForward: boolean;
-};
+export type wrapActionOpts = {};
 
 /**
  * Run & Record traces
@@ -32,14 +29,16 @@ export type wrapActionOpts = {
 export class RuntimeContext {
   private traces: TraceLog[] = [];
   private seqId: number = 0;
-  private mode: ERuntimeMode;
   private queryFuncs: Map<string, Function>;
 
-  private runtimeReplayDeferred: Deferred;
-  private asyncLocalStorage = new AsyncLocalStorage();
+  private runtimeForceReRun: boolean;
+  private runtimeReplayFinishDeferred: Deferred;
+  private runtimeResumeDeferred: Deferred;
+  private runtimeFinishDeferred: Deferred;
+  private asyncLocalStorage = new AsyncLocalStorage<TraceLog>();
+  private asyncLocalStorageReplay = new AsyncLocalStorage<TraceLog[]>();
 
-  constructor(mode: ERuntimeMode) {
-    this.mode = mode;
+  constructor() {
     this.queryFuncs = new Map();
   }
 
@@ -51,40 +50,57 @@ export class RuntimeContext {
     this.queryFuncs.clear();
   }
 
-  getTraces() {
-    return this.traces;
+  getTraces(): TraceLog[] {
+    // sort by _t traces
+    const doSort = (traces: TraceLog[]) => {
+      // sort all item level 0
+      const newItm = traces.sort((a, b) => a._t.localeCompare(b._t));
+
+      // for each item -> recursive sort children
+      for (const it of newItm) {
+        it.children = doSort(it.children);
+      }
+
+      return newItm;
+    };
+    return doSort(this.traces);
   }
 
   private blockPromise() {
-    this?.runtimeReplayDeferred.resolve();
+    // block hit === replay finish
+    this?.runtimeReplayFinishDeferred.resolve();
     logger("promise blocked");
-    return new Promise(() => {});
+    return this.runtimeResumeDeferred.promise;
   }
 
   public async run(f: (ctx: RuntimeContext) => Promise<any>) {
-    if (this.mode !== ERuntimeMode.EREPLAY_AND_RUN)
-      throw new Error(
-        "only available with runtime mode ERuntimeMode.EREPLAY_AND_RUN"
-      );
-
-    await f(this);
+    this.runtimeForceReRun = true;
+    await this.replay(f);
+    await this.resume();
   }
 
   public async replay(f: (ctx: RuntimeContext) => Promise<any>) {
-    if (this.mode !== ERuntimeMode.EREPLAY_ONLY)
-      throw new Error(
-        "only available with runtime mode ERuntimeMode.EREPLAY_ONLY"
-      );
-
-    this.runtimeReplayDeferred = new Deferred();
+    this.runtimeReplayFinishDeferred = new Deferred();
+    this.runtimeResumeDeferred = new Deferred();
+    this.runtimeFinishDeferred = new Deferred();
 
     const asyncRun = async () => {
-      await f(this);
-      this.runtimeReplayDeferred.resolve();
+      await this.asyncLocalStorageReplay.run(this.traces, async () => {
+        logger("replay 1");
+        await f(this);
+        logger("replay 2");
+        this.runtimeFinishDeferred.resolve();
+        this.runtimeReplayFinishDeferred.resolve();
+      });
     };
 
     asyncRun();
-    return this.runtimeReplayDeferred.promise;
+    await this.runtimeReplayFinishDeferred.promise;
+  }
+
+  public async resume() {
+    this.runtimeResumeDeferred.resolve();
+    await this.runtimeFinishDeferred.promise;
   }
 
   doQuery(name: string, args: any[]) {
@@ -96,23 +112,27 @@ export class RuntimeContext {
     this.queryFuncs.set(name, f);
   }
 
+  private now(): string {
+    return hrtime.bigint().toString();
+  }
+
+  private replayPickTraceItem(name: string): TraceLog {
+    const traceCtx =
+      (this.asyncLocalStorageReplay.getStore() as TraceLog[]) ?? [];
+    return traceCtx.find((itm) => itm.action === name);
+  }
+
   wrapAction<A extends ReadonlyArray<unknown>, R>(
     name: string,
     f: (...params: A) => Promise<R>,
     opts: wrapActionOpts = { canFastForward: true }
   ) {
     return async (...i: A) => {
-      const topItm = this.traces[this.seqId];
+      const topItm = this.replayPickTraceItem(name);
       if (topItm) {
-        if (topItm.action !== name) {
-          throw new Error(
-            `trace miss-match at ${this.seqId}: ${topItm.action} !== ${name}`
-          );
-        }
-
         this.seqId++;
         if (topItm.isSuccess) {
-          if (opts.canFastForward) {
+          if (topItm.children.length == 0) {
             logger(`fast-forward: ${topItm.seqId}`, {
               action: topItm.action,
               result: topItm.result,
@@ -126,23 +146,31 @@ export class RuntimeContext {
             result: topItm.result,
             error: topItm.error,
           });
-          return await f(...i);
+          return this.asyncLocalStorageReplay.run(
+            topItm.children,
+            async () => await f(...i)
+          );
         } else {
-          //TODO: check & retry ?
-          //  for now - re-throw error
+          //TODO: what should we do ?
+          // if replay only
+          //  throw error
+          // else
+          //  nothing
+
           throw topItm.error;
         }
       }
 
       // finish replay
-      if (this.mode === ERuntimeMode.EREPLAY_ONLY) {
+      if (!this.runtimeForceReRun) {
         logger(`block promise`);
-        return this.blockPromise();
+        await this.blockPromise();
       }
 
       // continue to run
       this.seqId++;
       const seqId = this.seqId;
+      const parentTraceItm = this.asyncLocalStorage.getStore() as TraceLog;
       const newItm: TraceLog = {
         seqId,
         action: name,
@@ -150,16 +178,21 @@ export class RuntimeContext {
         result: undefined,
         error: undefined,
         isSuccess: false,
-        parentSeqId: this.asyncLocalStorage.getStore() as number,
+        parentSeqId: parentTraceItm?.seqId,
+        children: [],
+        _t: this.now(),
       };
-      this.traces.push(newItm);
+
+      // link to parent ctx or global
+      if (!parentTraceItm) this.traces.push(newItm);
+      else parentTraceItm.children.push(newItm);
 
       const runCtx = `seqId:${newItm.seqId} parentSeqId:${newItm.parentSeqId}`;
       logger("begin", runCtx, name);
 
       let funcReturn: any;
       try {
-        funcReturn = await this.asyncLocalStorage.run(this.seqId, async () => {
+        funcReturn = await this.asyncLocalStorage.run(newItm, async () => {
           return f(...i);
         });
         newItm.isSuccess = true;
