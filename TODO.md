@@ -36,3 +36,40 @@ try {
   await releaseLockInventory
 }
 
+SystemInstruction
+  
+
+//-----------------------------------
+call for review
+  - blockPromise
+  - replay finish ? 
+  - resume ?
+
+//-----------------------------------
+traces: [] 
+mode: Replay | Run
+
+
+replay() {
+  mode = Replay
+}
+
+hookPromise 
+  if mode === Replay {
+    itm = lookupTrace
+    switch itm {
+      ...
+    }
+
+    if no more itm => 
+      replayDone 
+
+  } else {
+
+    record log
+      -> 
+
+
+  }
+
+//-----------------------------------

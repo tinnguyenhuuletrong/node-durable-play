@@ -3,30 +3,29 @@
 exports[`runtime - record simpleError 1`] = `
 [
   {
+    "_t": "_",
     "action": "doInc",
+    "children": [
+      {
+        "_t": "_",
+        "action": "waitMs",
+        "children": [],
+        "error": undefined,
+        "isSuccess": true,
+        "params": [
+          1000,
+        ],
+        "parentSeqId": 1,
+        "result": undefined,
+        "seqId": 2,
+      },
+    ],
     "error": undefined,
     "isSuccess": true,
     "params": [],
+    "parentSeqId": undefined,
     "result": 1,
     "seqId": 1,
-  },
-  {
-    "action": "waitMs",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [
-      1000,
-    ],
-    "result": undefined,
-    "seqId": 2,
-  },
-  {
-    "action": "doInc",
-    "error": [Error: 😪],
-    "isSuccess": false,
-    "params": [],
-    "result": undefined,
-    "seqId": 3,
   },
 ]
 `;
@@ -34,58 +33,29 @@ exports[`runtime - record simpleError 1`] = `
 exports[`runtime - record simpleSuccess 1`] = `
 [
   {
+    "_t": "_",
     "action": "doInc",
+    "children": [
+      {
+        "_t": "_",
+        "action": "waitMs",
+        "children": [],
+        "error": undefined,
+        "isSuccess": true,
+        "params": [
+          1000,
+        ],
+        "parentSeqId": 1,
+        "result": undefined,
+        "seqId": 2,
+      },
+    ],
     "error": undefined,
     "isSuccess": true,
     "params": [],
+    "parentSeqId": undefined,
     "result": 1,
     "seqId": 1,
-  },
-  {
-    "action": "waitMs",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [
-      1000,
-    ],
-    "result": undefined,
-    "seqId": 2,
-  },
-  {
-    "action": "doInc",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [],
-    "result": 2,
-    "seqId": 3,
-  },
-  {
-    "action": "waitMs",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [
-      1000,
-    ],
-    "result": undefined,
-    "seqId": 4,
-  },
-  {
-    "action": "doInc",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [],
-    "result": 3,
-    "seqId": 5,
-  },
-  {
-    "action": "waitMs",
-    "error": undefined,
-    "isSuccess": true,
-    "params": [
-      1000,
-    ],
-    "result": undefined,
-    "seqId": 6,
   },
 ]
 `;

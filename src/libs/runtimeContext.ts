@@ -87,7 +87,11 @@ export class RuntimeContext {
     const asyncRun = async () => {
       await this.asyncLocalStorageReplay.run(this.traces, async () => {
         logger("replay 1");
-        await f(this);
+        try {
+          await f(this);
+        } catch (error) {
+          logger("replay error");
+        }
         logger("replay 2");
         this.runtimeFinishDeferred.resolve();
         this.runtimeReplayFinishDeferred.resolve();

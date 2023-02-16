@@ -1,25 +1,17 @@
 import { promisify } from "node:util";
-import {
-  ERuntimeMode,
-  RuntimeContext,
-  TraceLog,
-} from "../../src/libs/runtimeContext";
+import { RuntimeContext, TraceLog } from "../../src/libs/runtimeContext";
 
 const waitMs = promisify(setTimeout);
 
 export async function simpleError(ctx: RuntimeContext) {
   let count = 0;
   const waitMsAction = ctx.wrapAction("waitMs", waitMs);
-  const doInc = ctx.wrapAction(
-    "doInc",
-    async () => {
-      count++;
-      if (count > 1) throw new Error("😪");
-      await waitMsAction(1000);
-      return count;
-    },
-    { canFastForward: false }
-  );
+  const doInc = ctx.wrapAction("doInc", async () => {
+    count++;
+    if (count > 1) throw new Error("😪");
+    await waitMsAction(1000);
+    return count;
+  });
   ctx.registerQueryFunc("getCount", () => {
     return count;
   });
