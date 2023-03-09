@@ -4,7 +4,7 @@ import debug from "debug";
 import humanInterval from "human-interval";
 import Deferred from "./deferred";
 import { clone } from "./utils";
-import assert from "assert";
+import { nextTick } from "process";
 
 const logger = debug("utils");
 const waitMs = promisify(setTimeout);
@@ -50,25 +50,30 @@ export class RuntimeContext {
   private asyncLocalStorage = new AsyncLocalStorage();
   private mode: "replay" | "run";
 
-  constructor() {}
+  // For check replay done
+  private insIndex = new Map<Ins, boolean>();
+  private replayDefered: Deferred;
 
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
+    this.instructions = [];
     this.traces = [];
     await Promise.race([await f(this)]);
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "replay";
-    this.instructions = clone(traces);
-    await Promise.race([await f(this)]);
+    this.traces = [];
+    this.replayDefered = new Deferred();
+    this._loadInstructions(traces);
+    await Promise.race([await f(this), this.replayDefered.promise]);
   }
 
   getTraces() {
     return this.traces;
   }
-  getInstructions() {
-    return this.instructions;
+  isReplayDone() {
+    return this.insIndex.size === 0;
   }
 
   async sleep(callId: string, x: number | string) {
@@ -182,12 +187,39 @@ export class RuntimeContext {
     if (!ins) throw new Error("Fatal error. Instruction missmatch.");
 
     ins.visited = true;
+    this.insIndex.delete(ins);
+    this._checkReplayDone();
+
     switch (expectedOp) {
       case "call":
         return ins as Ins & TraceCall;
 
       default:
         throw new Error("Fatal error. unknown type");
+    }
+  }
+
+  private _loadInstructions(traces: Trace[]) {
+    this.insIndex.clear();
+    const doIndex = (ins: Ins) => {
+      this.insIndex.set(ins, true);
+      for (const it of ins.child) {
+        doIndex(it);
+      }
+    };
+
+    this.instructions = clone(traces);
+
+    for (const it of this.instructions) {
+      doIndex(it);
+    }
+  }
+
+  private _checkReplayDone() {
+    if (this.isReplayDone()) {
+      nextTick(() => {
+        this.replayDefered.resolve();
+      });
     }
   }
 }

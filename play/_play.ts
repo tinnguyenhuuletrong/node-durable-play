@@ -7,7 +7,7 @@ const logger = debug("main");
 async function simpleFlow(ctx: RuntimeContext) {
   let total = 0;
   const doLog = ctx.wrapAction("doLog", async (msg: string) => {
-    // await ctx.sleep("s1", "1 second");
+    logger("log", msg);
     return msg;
   });
   const doInc = ctx.wrapAction("doInc", async (x: number) => {
@@ -18,12 +18,10 @@ async function simpleFlow(ctx: RuntimeContext) {
 
   logger("begin", total);
 
-  await Promise.all([
-    async () => {
-      doInc("p1", 10);
-    },
-    doInc("p2", 20),
-  ]);
+  await doInc("p1", 10);
+  await doInc("p2", 20);
+  await doInc("p3", 30);
+  await doInc("p4", 40);
 
   logger("end", total);
 }
@@ -36,6 +34,6 @@ async function main() {
 
   // Replay
   await ctx.replay(traces, simpleFlow);
-  console.dir(ctx.getInstructions(), { depth: 10 });
+  console.log("isReplayDone:", ctx.isReplayDone());
 }
 main();
