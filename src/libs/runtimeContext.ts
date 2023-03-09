@@ -1,215 +1,193 @@
-import { hrtime } from "process";
+import { promisify } from "util";
 import { AsyncLocalStorage } from "async_hooks";
 import debug from "debug";
+import humanInterval from "human-interval";
 import Deferred from "./deferred";
+import { clone } from "./utils";
+import assert from "assert";
+
 const logger = debug("utils");
+const waitMs = promisify(setTimeout);
 
-export type TraceLog = {
-  seqId: number;
-  action: string;
-  params: any[];
-  isSuccess: boolean;
-  result: any;
-  error: any;
-  parentSeqId?: number;
-  children: TraceLog[];
-  _t: string;
+type Ins = Trace & {
+  visited?: boolean;
 };
+type InsCall = Ins & TraceCall;
 
+export type Trace = {
+  opt: "call" | "sleep" | "condition";
+  callBy: string;
+  child: Trace[];
+};
+export type TraceCall = Trace & {
+  opt: "call";
+  funcName: string;
+  isSuccess: boolean;
+  response?: any;
+  error?: any;
+};
+export type TraceSleep = Trace & {
+  opt: "sleep";
+  wakeUpAt: Date;
+};
+export type TraceCondition = Trace & {
+  opt: "condition";
+  timeOutAt: Date;
+};
 export type wrapActionOpts = {};
 
-/**
- * Run & Record traces
- *  if top traces match
- *    if success
- *      resolve result
- *    else
- *      retry ?
- */
+const SYM_RECORD_INT = Symbol("SYM_RECORD_INT");
+
+class ErrInterupt extends Error {
+  constructor(msg: string, public traceItem: Trace) {
+    super(msg);
+  }
+}
+
 export class RuntimeContext {
-  private traces: TraceLog[] = [];
-  private seqId: number = 0;
-  private queryFuncs: Map<string, Function>;
+  private traces: Trace[] = [];
+  private instructions: Ins[] = [];
+  private asyncLocalStorage = new AsyncLocalStorage();
+  private mode: "replay" | "run";
 
-  private runtimeForceReRun: boolean;
-  private runtimeReplayFinishDeferred: Deferred;
-  private runtimeResumeDeferred: Deferred;
-  private runtimeFinishDeferred: Deferred;
-  private asyncLocalStorage = new AsyncLocalStorage<TraceLog>();
-  private asyncLocalStorageReplay = new AsyncLocalStorage<TraceLog[]>();
+  constructor() {}
 
-  constructor() {
-    this.queryFuncs = new Map();
+  async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
+    this.mode = "run";
+    this.traces = [];
+    await Promise.race([await f(this)]);
   }
 
-  restore(traces: TraceLog[]) {
-    this.traces = traces;
+  async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
+    this.mode = "replay";
+    this.instructions = clone(traces);
+    await Promise.race([await f(this)]);
   }
 
-  destroy() {
-    this.queryFuncs.clear();
+  getTraces() {
+    return this.traces;
+  }
+  getInstructions() {
+    return this.instructions;
   }
 
-  getTraces(): TraceLog[] {
-    // sort by _t traces
-    const doSort = (traces: TraceLog[]) => {
-      // sort all item level 0
-      const newItm = traces.sort((a, b) => a._t.localeCompare(b._t));
+  async sleep(callId: string, x: number | string) {
+    if (this.mode === "run") {
+      return this.sleepActionForRun(callId, x);
+    } else {
+      return this.sleepActionForReplay(callId, x);
+    }
+  }
 
-      // for each item -> recursive sort children
-      for (const it of newItm) {
-        it.children = doSort(it.children);
-      }
-
-      return newItm;
+  async sleepActionForRun(callId: string, x: number | string) {
+    let duration: number;
+    if (typeof x === "string") {
+      duration = humanInterval(x);
+    } else {
+      duration = x;
+    }
+    const wakeUpAt = new Date(Date.now() + duration);
+    const traceItem: TraceSleep = {
+      opt: "sleep",
+      callBy: "",
+      child: [],
+      wakeUpAt,
     };
-    return doSort(this.traces);
+    this._appendTrace(traceItem, callId);
+
+    // TODO: marked as finish or Sleep DeferedAction
+    // await waitMs();
   }
-
-  private blockPromise() {
-    // block hit === replay finish
-    this?.runtimeReplayFinishDeferred.resolve();
-    logger("promise blocked");
-    return this.runtimeResumeDeferred.promise;
-  }
-
-  public async run(f: (ctx: RuntimeContext) => Promise<any>) {
-    this.runtimeForceReRun = true;
-    await this.replay(f);
-    await this.resume();
-  }
-
-  public async replay(f: (ctx: RuntimeContext) => Promise<any>) {
-    this.runtimeReplayFinishDeferred = new Deferred();
-    this.runtimeResumeDeferred = new Deferred();
-    this.runtimeFinishDeferred = new Deferred();
-
-    const asyncRun = async () => {
-      await this.asyncLocalStorageReplay.run(this.traces, async () => {
-        logger("replay 1");
-        try {
-          await f(this);
-        } catch (error) {
-          logger("replay error");
-        }
-        logger("replay 2");
-        this.runtimeFinishDeferred.resolve();
-        this.runtimeReplayFinishDeferred.resolve();
-      });
-    };
-
-    asyncRun();
-    await this.runtimeReplayFinishDeferred.promise;
-  }
-
-  public async resume() {
-    this.runtimeResumeDeferred.resolve();
-    await this.runtimeFinishDeferred.promise;
-  }
-
-  doQuery(name: string, args: any[]) {
-    const f = this.queryFuncs.get(name);
-    return f(...args);
-  }
-
-  registerQueryFunc(name: string, f: Function) {
-    this.queryFuncs.set(name, f);
-  }
-
-  private now(): string {
-    return hrtime.bigint().toString();
-  }
-
-  private replayPickTraceItem(name: string): TraceLog {
-    const traceCtx =
-      (this.asyncLocalStorageReplay.getStore() as TraceLog[]) ?? [];
-    return traceCtx.find((itm) => itm.action === name);
-  }
+  async sleepActionForReplay(callId: string, x: number | string) {}
 
   wrapAction<A extends ReadonlyArray<unknown>, R>(
     name: string,
     f: (...params: A) => Promise<R>,
-    opts: wrapActionOpts = { canFastForward: true }
+    opts: wrapActionOpts = {}
   ) {
-    return async (...i: A) => {
-      const topItm = this.replayPickTraceItem(name);
-      if (topItm) {
-        this.seqId++;
-        if (topItm.isSuccess) {
-          if (topItm.children.length == 0) {
-            logger(`fast-forward: ${topItm.seqId}`, {
-              action: topItm.action,
-              result: topItm.result,
-              error: topItm.error,
-            });
-            return topItm.result;
-          }
+    if (this.mode === "run") return this.wrapActionForRun(name, f);
+    else return this.wrapActionForReplay(name, f);
+  }
 
-          logger(`replay: ${topItm.seqId}`, {
-            action: topItm.action,
-            result: topItm.result,
-            error: topItm.error,
-          });
-          return this.asyncLocalStorageReplay.run(
-            topItm.children,
-            async () => await f(...i)
-          );
+  private wrapActionForReplay<A extends ReadonlyArray<unknown>, R>(
+    name: string,
+    f: (...params: A) => Promise<R>
+  ) {
+    return async (callId: string, ...i: A) => {
+      const insItem: InsCall = this._consumeIns(callId, "call");
+
+      if (insItem.isSuccess) {
+        if (insItem.child.length > 0) {
+          const prevCtx = this.asyncLocalStorage.getStore();
+          this.asyncLocalStorage.enterWith(insItem);
+          const r = f(...i);
+          this.asyncLocalStorage.enterWith(prevCtx);
+          return r;
         } else {
-          //TODO: what should we do ?
-          // if replay only
-          //  throw error
-          // else
-          //  nothing
-
-          throw topItm.error;
+          return insItem.response;
         }
+      } else {
+        //TODO: Spawn Retry DeferedAction
       }
-
-      // finish replay
-      if (!this.runtimeForceReRun) {
-        logger(`block promise`);
-        await this.blockPromise();
-      }
-
-      // continue to run
-      this.seqId++;
-      const seqId = this.seqId;
-      const parentTraceItm = this.asyncLocalStorage.getStore() as TraceLog;
-      const newItm: TraceLog = {
-        seqId,
-        action: name,
-        params: [...i],
-        result: undefined,
-        error: undefined,
-        isSuccess: false,
-        parentSeqId: parentTraceItm?.seqId,
-        children: [],
-        _t: this.now(),
-      };
-
-      // link to parent ctx or global
-      if (!parentTraceItm) this.traces.push(newItm);
-      else parentTraceItm.children.push(newItm);
-
-      const runCtx = `seqId:${newItm.seqId} parentSeqId:${newItm.parentSeqId}`;
-      logger("begin", runCtx, name);
-
-      let funcReturn: any;
-      try {
-        funcReturn = await this.asyncLocalStorage.run(newItm, async () => {
-          return f(...i);
-        });
-        newItm.isSuccess = true;
-        newItm.result = funcReturn;
-      } catch (error) {
-        newItm.error = error;
-        newItm.isSuccess = false;
-        throw error;
-      }
-
-      logger("end", runCtx, { result: newItm.result, error: newItm.error });
-
-      return funcReturn;
     };
+  }
+
+  private wrapActionForRun<A extends ReadonlyArray<unknown>, R>(
+    name: string,
+    f: (...params: A) => Promise<R>
+  ) {
+    return async (callId: string, ...i: A) => {
+      const traceItem: TraceCall = {
+        opt: "call",
+        child: [],
+        funcName: name,
+        callBy: callId,
+        isSuccess: true,
+      };
+      this._appendTrace(traceItem, callId);
+
+      return await this.asyncLocalStorage.run(traceItem, async () => {
+        let res: R;
+        try {
+          res = await f(...i);
+          traceItem.isSuccess = true;
+          traceItem.response = res;
+        } catch (error) {
+          traceItem.isSuccess = false;
+        }
+        return res;
+      });
+    };
+  }
+
+  private _appendTrace(traceItem: Trace, callId: string) {
+    const parent = this.asyncLocalStorage.getStore() as Trace;
+    if (parent) {
+      traceItem.callBy = `${parent.callBy}>${callId}`;
+      parent.child.push(traceItem);
+    } else {
+      this.traces.push(traceItem);
+    }
+  }
+
+  private _consumeIns(callId: string, expectedOp: "call"): InsCall {
+    const parent = this.asyncLocalStorage.getStore() as Ins;
+    let ins: Ins;
+    if (parent) {
+      const nestedCallId = `${parent.callBy}>${callId}`;
+      ins = parent.child.find((itm) => itm.callBy === nestedCallId);
+    } else {
+      ins = this.instructions.find((itm) => itm.callBy === callId);
+    }
+    if (!ins) throw new Error("Fatal error. Instruction missmatch.");
+
+    ins.visited = true;
+    switch (expectedOp) {
+      case "call":
+        return ins as Ins & TraceCall;
+
+      default:
+        throw new Error("Fatal error. unknown type");
+    }
   }
 }

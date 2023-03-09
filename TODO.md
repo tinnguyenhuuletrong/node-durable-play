@@ -1,75 +1,93 @@
-- define ctx + log structure
-- define behavior
-    terminate point
-    call func -> check prev 
-                    success -> return 
-                    error -> ctx.can_retry ? retry : throw error
-- engine
-    v8
-    worker
+want 
 
+  await a 
+  await b 
+  await c
 
-mode restore
-    ----
-        run -> check logs -> resolve result | throw error
-
-mode restore & continue
-        run -> check logs -> resolve result 
-                                | throw error (retry ?)
-        write log continue run
-
-
-
-
-CheckOutProcess 
-
-await createOrderId
-await lockInventory {maxRetry:0}
-
-try {
-  await payment {maxRetry:2}
-  await waitForPacking {maxTime: 1Day}
-  await createShipId {maxRetry:2, uuid: xxx}
-  await waitForShip {maxTime: 1Day}
-  await markDone
-} catch {
-  await releaseLockInventory
-}
-
-SystemInstruction
-  
-
-//-----------------------------------
-call for review
-  - blockPromise
-  - replay finish ? 
-  - resume ?
-
-//-----------------------------------
-traces: [] 
-mode: Replay | Run
-
-
-replay() {
-  mode = Replay
-}
-
-hookPromise 
-  if mode === Replay {
-    itm = lookupTrace
-    switch itm {
-      ...
-    }
-
-    if no more itm => 
-      replayDone 
-
-  } else {
-
-    record log
-      -> 
-
+  if (await condition(async(), timeout)...) {
 
   }
 
-//-----------------------------------
+
+activities: a,b,c 
+  timeout 
+  auto retry 
+  uuid
+
+defering check : condition, sleep 
+  -> can interupt 
+
+// ---------
+// working example
+// ---------
+
+sample_1:
+  a = wrapped('a1', a) 
+logs: [
+  {call: 'a', callBy: 'a1', response: x},
+]
+        
+
+sample_2:
+  [c,d] = Promise.all([wrapped('a1', a), wrapped('a2', a)])
+
+logs: [
+    {call: 'a', callBy: 'a1', response: c},
+    {call: 'a', callBy: 'a2', response: d},
+  ]
+
+  
+sample_3:
+  state
+  a = async () {
+    wrapped('b1', b)
+    state = {... /*some update*/}
+  }
+
+  [c,d] = Promise.all([wrapped('a1', a), wrapped('a2', a)])
+
+// if has child -> ignore response on parent scope
+logs: [
+    {call: 'a', callBy: 'a1', child: [
+      {call: 'b', callBy: 'a1.b1', response: d}
+    ]},
+    {call: 'a', callBy: 'a2', child: [
+      {call: 'b', callBy: 'a2.b1', response: d}
+    ]},
+  ]
+
+  
+
+sample_4:
+  await sleep('a1', '5 ms')
+  
+logs: [
+  {opt: 'seep', wakeUpAt: 'timeStamp', callBy: 'a1'},
+]
+runtime: 
+  check wakeupAt
+    if wakeupAt > now: -> resolve 
+    else finish({nextResumeAt: wakeUpAt}) -> check later
+
+
+
+// No need interval check condition. B/c state only change if 
+//  have action call
+//  time-on
+//  => interval check is wasted ??? 
+sample_5:
+    await condition('a1', () => stateCheck === true, '5 ms')
+    
+logs: [
+    {opt: 'condition', timeOutAt: 'timeStamp', callBy: 'a1'},
+  ]
+  runtime: 
+    check timeOutAt
+      if timeOutAt > now: -> resolve(false)
+      else {
+        if check() 
+          -> resolve(true)
+        else
+          finish({nextResumeAt: Math.min(timeOutAt})
+      }
+  
