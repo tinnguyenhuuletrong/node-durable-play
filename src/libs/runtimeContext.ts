@@ -13,6 +13,7 @@ type Ins = Trace & {
   visited?: boolean;
 };
 type InsCall = Ins & TraceCall;
+type InsSleep = Ins & TraceSleep;
 
 export type Trace = {
   opt: "call" | "sleep" | "condition";
@@ -28,49 +29,121 @@ export type TraceCall = Trace & {
 };
 export type TraceSleep = Trace & {
   opt: "sleep";
-  wakeUpAt: Date;
+  wakeUpAt: number;
 };
 export type TraceCondition = Trace & {
   opt: "condition";
-  timeOutAt: Date;
+  timeOutAt: number;
 };
 export type wrapActionOpts = {};
 
-const SYM_RECORD_INT = Symbol("SYM_RECORD_INT");
+enum EBlockType {
+  sleep,
+}
+interface IBlock {
+  getType(): EBlockType;
+  wait(): Promise<any>;
+  cancel();
+  resume();
+  canContinue(): boolean;
+}
 
-class ErrInterupt extends Error {
-  constructor(msg: string, public traceItem: Trace) {
-    super(msg);
+class BlockSleep implements IBlock {
+  private _def: Deferred = new Deferred();
+
+  constructor(public itm: Trace, public activeAfter: Date) {}
+
+  getType() {
+    return EBlockType.sleep;
+  }
+
+  canContinue() {
+    return Date.now() > this.activeAfter.valueOf();
+  }
+
+  async wait() {
+    await this._def.promise;
+  }
+
+  cancel() {
+    this._def.reject();
+  }
+
+  resume() {
+    this._def.resolve();
   }
 }
 
 export class RuntimeContext {
   private traces: Trace[] = [];
   private instructions: Ins[] = [];
+  private program: Promise<any>;
   private asyncLocalStorage = new AsyncLocalStorage();
   private mode: "replay" | "run";
+  private isProgramEnd: boolean;
 
   // For check replay done
   private insIndex = new Map<Ins, boolean>();
   private replayDefered: Deferred;
 
+  // Block
+  private blocks: IBlock[];
+  private runDefered: Deferred;
+
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
     this.instructions = [];
     this.traces = [];
-    await Promise.race([await f(this)]);
+    this.blocks = [];
+
+    this.runDefered = new Deferred();
+    this._loadProgram(f);
+
+    await Promise.race([this.program, this.runDefered.promise]);
+  }
+
+  destroy() {
+    for (const it of this.blocks) {
+      it.cancel();
+    }
+    this.blocks = [];
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "replay";
-    this.traces = [];
-    this.replayDefered = new Deferred();
+    this.traces = traces;
+    this.blocks = [];
     this._loadInstructions(traces);
-    await Promise.race([await f(this), this.replayDefered.promise]);
+
+    this.replayDefered = new Deferred();
+    this._loadProgram(f);
+
+    await Promise.race([this.program, this.replayDefered.promise]);
+  }
+
+  async continue() {
+    if (this.blocks.length === 0) return;
+    const runable = this.blocks.filter((itm) => itm.canContinue());
+
+    this.mode = "run";
+    this.runDefered = new Deferred();
+    this.blocks = this.blocks.filter((itm) => !itm.canContinue());
+
+    for (const it of runable) {
+      it.resume();
+    }
+
+    await Promise.race([this.program, this.runDefered.promise]);
   }
 
   getTraces() {
     return this.traces;
+  }
+  getBlocks() {
+    return this.blocks;
+  }
+  isEnd() {
+    return this.isProgramEnd;
   }
   isReplayDone() {
     return this.insIndex.size === 0;
@@ -91,78 +164,92 @@ export class RuntimeContext {
     } else {
       duration = x;
     }
-    const wakeUpAt = new Date(Date.now() + duration);
+    const wakeUpAt = Date.now() + duration;
     const traceItem: TraceSleep = {
       opt: "sleep",
-      callBy: "",
+      callBy: callId,
       child: [],
       wakeUpAt,
     };
     this._appendTrace(traceItem, callId);
 
     // TODO: marked as finish or Sleep DeferedAction
-    // await waitMs();
+    const block = new BlockSleep(traceItem, new Date(wakeUpAt));
+    this._addBlock(block);
+    await block.wait();
   }
-  async sleepActionForReplay(callId: string, x: number | string) {}
+
+  async sleepActionForReplay(callId: string, x: number | string) {
+    const insItem = this._consumeIns(callId, "sleep") as InsSleep;
+    const block = new BlockSleep(insItem, new Date(insItem.wakeUpAt));
+
+    // auto resolve
+    this._addBlock(block);
+
+    await block.wait();
+  }
 
   wrapAction<A extends ReadonlyArray<unknown>, R>(
     name: string,
     f: (...params: A) => Promise<R>,
     opts: wrapActionOpts = {}
   ) {
-    if (this.mode === "run") return this.wrapActionForRun(name, f);
-    else return this.wrapActionForReplay(name, f);
+    return async (callId: string, ...i: A) => {
+      if (this.mode === "run")
+        return this.wrapActionForRun(name, f, callId, ...i);
+      else return this.wrapActionForReplay(name, f, callId, ...i);
+    };
   }
 
-  private wrapActionForReplay<A extends ReadonlyArray<unknown>, R>(
+  private async wrapActionForReplay<A extends ReadonlyArray<unknown>, R>(
     name: string,
-    f: (...params: A) => Promise<R>
+    f: (...params: A) => Promise<R>,
+    callId: string,
+    ...i: A
   ) {
-    return async (callId: string, ...i: A) => {
-      const insItem: InsCall = this._consumeIns(callId, "call");
+    const insItem = this._consumeIns(callId, "call") as InsCall;
 
-      if (insItem.isSuccess) {
-        if (insItem.child.length > 0) {
-          const prevCtx = this.asyncLocalStorage.getStore();
-          this.asyncLocalStorage.enterWith(insItem);
-          const r = f(...i);
-          this.asyncLocalStorage.enterWith(prevCtx);
-          return r;
-        } else {
-          return insItem.response;
-        }
+    if (insItem.isSuccess) {
+      if (insItem.child.length > 0) {
+        const prevCtx = this.asyncLocalStorage.getStore();
+        this.asyncLocalStorage.enterWith(insItem);
+        const r = f(...i);
+        this.asyncLocalStorage.enterWith(prevCtx);
+        return r;
       } else {
-        //TODO: Spawn Retry DeferedAction
+        return insItem.response as R;
       }
-    };
+    } else {
+      //TODO: Spawn Retry DeferedAction
+    }
   }
 
-  private wrapActionForRun<A extends ReadonlyArray<unknown>, R>(
+  private async wrapActionForRun<A extends ReadonlyArray<unknown>, R>(
     name: string,
-    f: (...params: A) => Promise<R>
+    f: (...params: A) => Promise<R>,
+    callId: string,
+    ...i: A
   ) {
-    return async (callId: string, ...i: A) => {
-      const traceItem: TraceCall = {
-        opt: "call",
-        child: [],
-        funcName: name,
-        callBy: callId,
-        isSuccess: true,
-      };
-      this._appendTrace(traceItem, callId);
-
-      return await this.asyncLocalStorage.run(traceItem, async () => {
-        let res: R;
-        try {
-          res = await f(...i);
-          traceItem.isSuccess = true;
-          traceItem.response = res;
-        } catch (error) {
-          traceItem.isSuccess = false;
-        }
-        return res;
-      });
+    const traceItem: TraceCall = {
+      opt: "call",
+      child: [],
+      funcName: name,
+      callBy: callId,
+      isSuccess: true,
     };
+    this._appendTrace(traceItem, callId);
+
+    return await this.asyncLocalStorage.run(traceItem, async () => {
+      let res: R;
+      try {
+        res = await f(...i);
+        traceItem.isSuccess = true;
+        traceItem.response = res;
+      } catch (error) {
+        traceItem.isSuccess = false;
+      }
+      return res;
+    });
   }
 
   private _appendTrace(traceItem: Trace, callId: string) {
@@ -175,7 +262,10 @@ export class RuntimeContext {
     }
   }
 
-  private _consumeIns(callId: string, expectedOp: "call"): InsCall {
+  private _consumeIns(
+    callId: string,
+    expectedOp: "call" | "sleep"
+  ): InsCall | InsSleep {
     const parent = this.asyncLocalStorage.getStore() as Ins;
     let ins: Ins;
     if (parent) {
@@ -192,11 +282,26 @@ export class RuntimeContext {
 
     switch (expectedOp) {
       case "call":
-        return ins as Ins & TraceCall;
+        return ins as InsCall;
+      case "sleep":
+        return ins as InsSleep;
 
       default:
         throw new Error("Fatal error. unknown type");
     }
+  }
+
+  private _loadProgram(f: (ctx: RuntimeContext) => Promise<any>) {
+    this.isProgramEnd = false;
+    this.program = f(this);
+    this.program.then(() => {
+      this.isProgramEnd = true;
+    });
+    this.program.catch((err) => {
+      // TODO: check error type
+      //  Intended interrupt -> ignore
+      //  Else -> bubble
+    });
   }
 
   private _loadInstructions(traces: Trace[]) {
@@ -221,5 +326,13 @@ export class RuntimeContext {
         this.replayDefered.resolve();
       });
     }
+  }
+
+  private _addBlock(block: IBlock) {
+    this.blocks.push(block);
+
+    nextTick(() => {
+      this.runDefered.resolve();
+    });
   }
 }
