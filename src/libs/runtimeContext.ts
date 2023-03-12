@@ -48,6 +48,8 @@ interface IBlock {
   canContinue(): boolean;
 }
 
+const INT_SYM = Symbol("INT_SYM");
+
 class BlockSleep implements IBlock {
   private _def: Deferred = new Deferred();
 
@@ -66,7 +68,7 @@ class BlockSleep implements IBlock {
   }
 
   cancel() {
-    this._def.reject();
+    this._def.reject(INT_SYM);
   }
 
   resume() {
@@ -87,14 +89,14 @@ export class RuntimeContext {
   private replayDefered: Deferred;
 
   // Block
-  private blocks: IBlock[];
+  private blocks: IBlock[] = [];
   private runDefered: Deferred;
 
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
     this.instructions = [];
     this.traces = [];
-    this.blocks = [];
+    this._cleanupBlocks();
 
     this.runDefered = new Deferred();
     this._loadProgram(f);
@@ -103,16 +105,13 @@ export class RuntimeContext {
   }
 
   destroy() {
-    for (const it of this.blocks) {
-      it.cancel();
-    }
-    this.blocks = [];
+    this._cleanupBlocks();
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "replay";
     this.traces = traces;
-    this.blocks = [];
+    this._cleanupBlocks();
     this._loadInstructions(traces);
 
     this.replayDefered = new Deferred();
@@ -293,15 +292,20 @@ export class RuntimeContext {
 
   private _loadProgram(f: (ctx: RuntimeContext) => Promise<any>) {
     this.isProgramEnd = false;
-    this.program = f(this);
-    this.program.then(() => {
-      this.isProgramEnd = true;
-    });
-    this.program.catch((err) => {
-      // TODO: check error type
-      //  Intended interrupt -> ignore
-      //  Else -> bubble
-    });
+
+    const doExec = async () => {
+      try {
+        await f(this);
+      } catch (error) {
+        if (error === INT_SYM) return;
+        logger(error);
+        throw error;
+      } finally {
+        this.isProgramEnd = true;
+      }
+    };
+
+    this.program = doExec();
   }
 
   private _loadInstructions(traces: Trace[]) {
@@ -334,5 +338,12 @@ export class RuntimeContext {
     nextTick(() => {
       this.runDefered.resolve();
     });
+  }
+
+  private _cleanupBlocks() {
+    for (const it of this.blocks) {
+      it.cancel();
+    }
+    this.blocks = [];
   }
 }

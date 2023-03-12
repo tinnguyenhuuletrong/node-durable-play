@@ -39,8 +39,20 @@ async function main() {
 
   logger("runWaitAndReplay");
   await runWaitAndReplay();
+
+  logger("runAndDestroy");
+  await runAndDestroy();
 }
 main();
+
+async function runAndDestroy() {
+  const ctx = new RuntimeContext();
+  await ctx.runAsNew(simpleFlow);
+  console.dir(ctx.getTraces(), { depth: 10 });
+  console.log("blocks: ", ctx.getBlocks());
+
+  ctx.destroy();
+}
 
 async function runAndContinue() {
   const ctx = new RuntimeContext();
