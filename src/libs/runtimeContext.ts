@@ -86,7 +86,6 @@ export class RuntimeContext {
 
   // For check replay done
   private insIndex = new Map<Ins, boolean>();
-  private replayDefered: Deferred;
 
   // Block
   private blocks: IBlock[] = [];
@@ -114,10 +113,10 @@ export class RuntimeContext {
     this._cleanupBlocks();
     this._loadInstructions(traces);
 
-    this.replayDefered = new Deferred();
+    this.runDefered = new Deferred();
     this._loadProgram(f);
 
-    await Promise.race([this.program, this.replayDefered.promise]);
+    await Promise.race([this.program, this.runDefered.promise]);
   }
 
   async continue() {
@@ -277,7 +276,6 @@ export class RuntimeContext {
 
     ins.visited = true;
     this.insIndex.delete(ins);
-    this._checkReplayDone();
 
     switch (expectedOp) {
       case "call":
@@ -321,14 +319,6 @@ export class RuntimeContext {
 
     for (const it of this.instructions) {
       doIndex(it);
-    }
-  }
-
-  private _checkReplayDone() {
-    if (this.isReplayDone()) {
-      nextTick(() => {
-        this.replayDefered.resolve();
-      });
     }
   }
 
