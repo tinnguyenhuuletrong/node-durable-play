@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev:play": "ts-node play/_play.ts",
+    "dev:play2": "ts-node play/_play_promise_race_all.ts",
     "build": "tsc",
     "test": "jest"
   },

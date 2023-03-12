@@ -209,11 +209,8 @@ export class RuntimeContext {
 
     if (insItem.isSuccess) {
       if (insItem.child.length > 0) {
-        const prevCtx = this.asyncLocalStorage.getStore();
-        this.asyncLocalStorage.enterWith(insItem);
-        const r = f(...i);
-        this.asyncLocalStorage.enterWith(prevCtx);
-        return r;
+        const res = this.asyncLocalStorage.run(insItem, () => f(...i));
+        return res;
       } else {
         return insItem.response as R;
       }
@@ -294,12 +291,12 @@ export class RuntimeContext {
     const doExec = async () => {
       try {
         await f(this);
+        this.isProgramEnd = true;
+        this._cleanupBlocks();
       } catch (error) {
         if (error === INT_SYM) return;
         logger(error);
         throw error;
-      } finally {
-        this.isProgramEnd = true;
       }
     };
 
