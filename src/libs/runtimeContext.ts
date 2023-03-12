@@ -16,7 +16,7 @@ type InsCall = Ins & TraceCall;
 type InsSleep = Ins & TraceSleep;
 
 export type Trace = {
-  opt: "call" | "sleep" | "condition";
+  opt: "call" | "sleep" | "condition" | "end" | "start";
   callBy: string;
   child: Trace[];
 };
@@ -34,6 +34,12 @@ export type TraceSleep = Trace & {
 export type TraceCondition = Trace & {
   opt: "condition";
   timeOutAt: number;
+};
+export type TraceEnd = Trace & {
+  opt: "end";
+};
+export type TraceStart = Trace & {
+  opt: "start";
 };
 export type wrapActionOpts = {};
 
@@ -181,7 +187,6 @@ export class RuntimeContext {
     const insItem = this._consumeIns(callId, "sleep") as InsSleep;
     const block = new BlockSleep(insItem, new Date(insItem.wakeUpAt));
 
-    // auto resolve
     this._addBlock(block);
 
     await block.wait();
@@ -290,7 +295,26 @@ export class RuntimeContext {
 
     const doExec = async () => {
       try {
+        if (this.mode === "run") {
+          const startTrace: TraceStart = {
+            opt: "start",
+            callBy: "",
+            child: [],
+          };
+          this._appendTrace(startTrace, "");
+        }
+
         await f(this);
+
+        if (this.mode === "run") {
+          const endTrace: TraceEnd = {
+            opt: "end",
+            callBy: "",
+            child: [],
+          };
+          this._appendTrace(endTrace, "");
+        }
+
         this.isProgramEnd = true;
         this._cleanupBlocks();
       } catch (error) {

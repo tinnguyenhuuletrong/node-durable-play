@@ -41,11 +41,14 @@ async function promiseFlow(ctx: RuntimeContext) {
 
 async function main() {
   const logger = debug("main");
-  // logger("runAndContinue");
-  // await runAndContinue();
+  logger("runAndContinue");
+  await runAndContinue();
 
   logger("runReplayAndContinue");
   await runReplayAndContinue();
+
+  logger("runEndAndReplay");
+  await runEndAndReplay();
 }
 main();
 
@@ -84,6 +87,39 @@ async function runReplayAndContinue() {
   }
 
   console.dir(ctx.getTraces(), { depth: 10 });
+  console.log("blocks: ", ctx.getBlocks());
+  console.log("isEnd: ", ctx.isEnd());
+}
+
+async function runEndAndReplay() {
+  const ctx = new RuntimeContext();
+  await ctx.runAsNew(promiseFlow);
+  console.log("blocks: ", ctx.getBlocks());
+
+  while (!ctx.isEnd()) {
+    console.log("wait and continue after 2 sec");
+    await waitMs(2000);
+    await ctx.continue();
+  }
+
+  console.dir(ctx.getTraces(), { depth: 10 });
+  console.log("blocks: ", ctx.getBlocks());
+  console.log("isEnd: ", ctx.isEnd());
+
+  console.log("replay... ");
+
+  // Next
+  // Flow end -> it should replay all
+  //  auto resolve block ?
+  //   -> Get conflict with flow not end
+  //      replay -> block resolve -> continue run -> missing instruction
+  //      see _play.ts:runWaitAndReplay
+  await ctx.replay(ctx.getTraces(), promiseFlow);
+
+  while (!ctx.isEnd()) {
+    await ctx.continue();
+  }
+
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
 }
