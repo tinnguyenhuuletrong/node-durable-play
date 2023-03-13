@@ -3,6 +3,7 @@ process.env.DEBUG = "*";
 import { promisify } from "util";
 import debug from "debug";
 import { RuntimeContext } from "../src";
+import assert from "assert";
 
 const loggerFlow = debug("flow");
 
@@ -31,6 +32,7 @@ async function simpleFlow(ctx: RuntimeContext) {
 
 async function main() {
   const logger = debug("main");
+
   logger("runAndContinue");
   await runAndContinue();
 
@@ -42,6 +44,9 @@ async function main() {
 
   logger("runAndDestroy");
   await runAndDestroy();
+
+  logger("runEndAndReplay");
+  await runEndAndReplay();
 }
 main();
 
@@ -52,6 +57,7 @@ async function runAndDestroy() {
   console.log("blocks: ", ctx.getBlocks());
 
   ctx.destroy();
+  assert(ctx.getBlocks().length === 0, "blocks empty");
 }
 
 async function runAndContinue() {
@@ -60,6 +66,7 @@ async function runAndContinue() {
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
 
+  assert(ctx.isEnd() === false, "ctx.isEnd() should false");
   console.log("resume after 2 seconds");
 
   await waitMs(2000);
@@ -68,6 +75,7 @@ async function runAndContinue() {
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }
 
 async function runReplayAndContinue() {
@@ -79,6 +87,7 @@ async function runReplayAndContinue() {
   console.log("isReplayDone:", ctx.isReplayDone());
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd() === false, "ctx.isEnd() should false");
 
   console.log("resume after 2 seconds");
 
@@ -88,6 +97,7 @@ async function runReplayAndContinue() {
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }
 
 async function runWaitAndReplay() {
@@ -98,14 +108,41 @@ async function runWaitAndReplay() {
   console.log("replay after 2 seconds");
   await waitMs(2000);
 
-  // // Replay
+  // Replay
   await ctx.replay(ctx.getTraces(), simpleFlow);
   console.log("blocks: ", ctx.getBlocks());
   console.log("isReplayDone:", ctx.isReplayDone());
+  assert(ctx.isEnd() === false, "ctx.isEnd() should false");
 
   await ctx.continue();
 
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
+}
+
+async function runEndAndReplay() {
+  const ctx = new RuntimeContext();
+  await ctx.runAsNew(simpleFlow);
+  console.log("blocks: ", ctx.getBlocks());
+
+  while (!ctx.isEnd()) {
+    console.log("wait and continue after 2 sec");
+    await waitMs(2000);
+    await ctx.continue();
+  }
+
+  console.dir(ctx.getTraces(), { depth: 10 });
+  console.log("blocks: ", ctx.getBlocks());
+  console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
+
+  console.log("replay... ");
+
+  await ctx.replay(ctx.getTraces(), simpleFlow);
+
+  console.log("blocks: ", ctx.getBlocks());
+  console.log("isEnd: ", ctx.isEnd());
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }

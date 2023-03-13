@@ -3,6 +3,7 @@ process.env.DEBUG = "*";
 import { promisify } from "util";
 import debug from "debug";
 import { RuntimeContext } from "../src";
+import assert from "assert";
 
 const loggerFlow = debug("flow");
 
@@ -57,6 +58,7 @@ async function runAndContinue() {
   await ctx.runAsNew(promiseFlow);
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
+  assert(ctx.isEnd() === false, "ctx.isEnd() should false");
 
   while (!ctx.isEnd()) {
     console.log("wait and continue after 2 sec");
@@ -67,6 +69,8 @@ async function runAndContinue() {
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }
 
 async function runReplayAndContinue() {
@@ -79,6 +83,7 @@ async function runReplayAndContinue() {
   await ctx.replay(ctx.getTraces(), promiseFlow);
   console.log("isEnd: ", ctx.isEnd());
   console.log("blocks: ", ctx.getBlocks());
+  assert(ctx.isEnd() === false, "ctx.isEnd() should false");
 
   while (!ctx.isEnd()) {
     console.log("wait and continue after 2 sec");
@@ -89,6 +94,8 @@ async function runReplayAndContinue() {
   console.dir(ctx.getTraces(), { depth: 10 });
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }
 
 async function runEndAndReplay() {
@@ -106,20 +113,14 @@ async function runEndAndReplay() {
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
 
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
+
   console.log("replay... ");
 
-  // Next
-  // Flow end -> it should replay all
-  //  auto resolve block ?
-  //   -> Get conflict with flow not end
-  //      replay -> block resolve -> continue run -> missing instruction
-  //      see _play.ts:runWaitAndReplay
   await ctx.replay(ctx.getTraces(), promiseFlow);
-
-  while (!ctx.isEnd()) {
-    await ctx.continue();
-  }
 
   console.log("blocks: ", ctx.getBlocks());
   console.log("isEnd: ", ctx.isEnd());
+
+  assert(ctx.isEnd(), "ctx.isEnd() should true");
 }

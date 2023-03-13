@@ -92,6 +92,7 @@ export class RuntimeContext {
 
   // For check replay done
   private insIndex = new Map<Ins, boolean>();
+  private replayFinishedProgram = false;
 
   // Block
   private blocks: IBlock[] = [];
@@ -177,7 +178,6 @@ export class RuntimeContext {
     };
     this._appendTrace(traceItem, callId);
 
-    // TODO: marked as finish or Sleep DeferedAction
     const block = new BlockSleep(traceItem, new Date(wakeUpAt));
     this._addBlock(block);
     await block.wait();
@@ -329,7 +329,9 @@ export class RuntimeContext {
 
   private _loadInstructions(traces: Trace[]) {
     this.insIndex.clear();
+    this.replayFinishedProgram = false;
     const doIndex = (ins: Ins) => {
+      if (ins.opt === "end") this.replayFinishedProgram = true;
       this.insIndex.set(ins, true);
       for (const it of ins.child) {
         doIndex(it);
@@ -346,9 +348,12 @@ export class RuntimeContext {
   private _addBlock(block: IBlock) {
     this.blocks.push(block);
 
-    nextTick(() => {
-      this.runDefered.resolve();
-    });
+    // replay finished program -> no need to block
+    if (this.mode === "replay" && this.replayFinishedProgram) {
+      block.resume();
+      return;
+    }
+    this.runDefered.resolve();
   }
 
   private _cleanupBlocks() {
