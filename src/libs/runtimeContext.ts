@@ -4,7 +4,6 @@ import debug from "debug";
 import humanInterval from "human-interval";
 import Deferred from "./deferred";
 import { clone } from "./utils";
-import { nextTick } from "process";
 
 const logger = debug("utils");
 const waitMs = promisify(setTimeout);
@@ -14,9 +13,12 @@ type Ins = Trace & {
 };
 type InsCall = Ins & TraceCall;
 type InsSleep = Ins & TraceSleep;
+type InsCondition = Ins & TraceCondition;
+
+type AllOps = "call" | "sleep" | "condition" | "end" | "start";
 
 export type Trace = {
-  opt: "call" | "sleep" | "condition" | "end" | "start";
+  opt: AllOps;
   callBy: string;
   child: Trace[];
 };
@@ -33,7 +35,9 @@ export type TraceSleep = Trace & {
 };
 export type TraceCondition = Trace & {
   opt: "condition";
-  timeOutAt: number;
+  deadlineAt: number;
+  isFinish: boolean;
+  response?: boolean;
 };
 export type TraceEnd = Trace & {
   opt: "end";
@@ -45,6 +49,7 @@ export type wrapActionOpts = {};
 
 enum EBlockType {
   sleep,
+  cond,
 }
 interface IBlock {
   getType(): EBlockType;
@@ -82,6 +87,41 @@ class BlockSleep implements IBlock {
   }
 }
 
+class BlockCondition implements IBlock {
+  private _def: Deferred = new Deferred();
+  isDeadlinePased: boolean;
+  isConditionPassed: boolean;
+
+  constructor(
+    public itm: Trace,
+    public deadlineAt: Date,
+    private checkFunc: () => boolean
+  ) {}
+
+  getType() {
+    return EBlockType.cond;
+  }
+
+  canContinue() {
+    this.isDeadlinePased = Date.now() > this.deadlineAt.valueOf();
+    this.isConditionPassed = this.checkFunc();
+
+    return this.isDeadlinePased || this.isConditionPassed;
+  }
+
+  async wait() {
+    await this._def.promise;
+  }
+
+  cancel() {
+    this._def.reject(INT_SYM);
+  }
+
+  resume() {
+    this._def.resolve();
+  }
+}
+
 export class RuntimeContext {
   private traces: Trace[] = [];
   private instructions: Ins[] = [];
@@ -98,10 +138,14 @@ export class RuntimeContext {
   private blocks: IBlock[] = [];
   private runDefered: Deferred;
 
+  // Signal
+  private signals: Map<string, Function> = new Map();
+
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
     this.instructions = [];
     this.traces = [];
+    this.signals.clear();
     this._cleanupBlocks();
 
     this.runDefered = new Deferred();
@@ -111,12 +155,14 @@ export class RuntimeContext {
   }
 
   destroy() {
+    this.signals.clear();
     this._cleanupBlocks();
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "replay";
     this.traces = traces;
+    this.signals.clear();
     this._cleanupBlocks();
     this._loadInstructions(traces);
 
@@ -152,6 +198,73 @@ export class RuntimeContext {
   }
   isReplayDone() {
     return this.insIndex.size === 0;
+  }
+
+  //-------------------------------------------------------------------
+  //  System action
+  //-------------------------------------------------------------------
+
+  async condition(
+    callId: string,
+    checkFn: () => boolean,
+    waitFor: number | string
+  ): Promise<boolean> {
+    if (this.mode === "run") {
+      return this.conditionForRun(callId, checkFn, waitFor);
+    } else {
+      return this.conditionForReplay(callId, checkFn, waitFor);
+    }
+  }
+
+  private async conditionForRun(
+    callId: string,
+    checkFn: () => boolean,
+    maxWait: number | string
+  ): Promise<boolean> {
+    let duration: number;
+    if (typeof maxWait === "string") {
+      duration = humanInterval(maxWait);
+    } else {
+      duration = maxWait;
+    }
+    const deadlineAt = Date.now() + duration;
+
+    const traceItem: TraceCondition = {
+      opt: "condition",
+      callBy: callId,
+      child: [],
+      isFinish: false,
+      deadlineAt,
+    };
+    this._appendTrace(traceItem, callId);
+
+    const block = new BlockCondition(traceItem, new Date(deadlineAt), checkFn);
+    this._addBlock(block);
+
+    await block.wait();
+
+    traceItem.isFinish = true;
+    traceItem.response = block.isConditionPassed;
+
+    return block.isConditionPassed;
+  }
+
+  private async conditionForReplay(
+    callId: string,
+    checkFn: () => boolean,
+    maxWait: number | string
+  ): Promise<boolean> {
+    const insItem = this._consumeIns(callId, "condition") as InsCondition;
+    const block = new BlockCondition(
+      insItem,
+      new Date(insItem.deadlineAt),
+      checkFn
+    );
+
+    this._addBlock(block);
+
+    await block.wait();
+    return !!insItem.response;
   }
 
   async sleep(callId: string, x: number | string) {
@@ -191,6 +304,31 @@ export class RuntimeContext {
 
     await block.wait();
   }
+
+  //-------------------------------------------------------------------
+  //  User base signal
+  //    signal state change
+  //    query read data. no state change
+  //-------------------------------------------------------------------
+
+  withSignal<A extends ReadonlyArray<unknown>, R>(
+    name: string,
+    f: (...params: A) => R
+  ) {
+    this.signals.set(name, f);
+  }
+
+  callSignal(name: string, ...i: any): Function {
+    //TODO: next add hoc to record Trace log for replay
+    //  Link it with block
+    //    Replay -> auto resolve block with
+    //        timeout or signal resolve
+    return this.signals.get(name)(...i);
+  }
+
+  //-------------------------------------------------------------------
+  //  User base action
+  //-------------------------------------------------------------------
 
   wrapAction<A extends ReadonlyArray<unknown>, R>(
     name: string,
@@ -264,8 +402,8 @@ export class RuntimeContext {
 
   private _consumeIns(
     callId: string,
-    expectedOp: "call" | "sleep"
-  ): InsCall | InsSleep {
+    expectedOp: AllOps
+  ): InsCall | InsSleep | InsCondition {
     const parent = this.asyncLocalStorage.getStore() as Ins;
     let ins: Ins;
     if (parent) {
@@ -284,6 +422,8 @@ export class RuntimeContext {
         return ins as InsCall;
       case "sleep":
         return ins as InsSleep;
+      case "condition":
+        return ins as InsCondition;
 
       default:
         throw new Error("Fatal error. unknown type");
