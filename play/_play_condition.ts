@@ -34,7 +34,8 @@ async function conditionFlow(ctx: RuntimeContext) {
 
   if (await ctx.condition("cond_check_bonus", () => total > 50, "2 seconds")) {
     loggerFlow("😀. total now > 50. Give X2 bonus", total);
-    total = await doInc("bonus", total);
+
+    await doInc("bonus", total);
   } else {
     loggerFlow("😭.");
   }

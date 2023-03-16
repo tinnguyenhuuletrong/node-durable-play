@@ -5,13 +5,15 @@ import humanInterval from "human-interval";
 import Deferred from "./deferred";
 import { clone } from "./utils";
 
-const logger = debug("utils");
+const loggerError = debug("node-durable:error");
+const loggerVerbose = debug("node-durable:verbose");
 const waitMs = promisify(setTimeout);
 
 type Ins = Trace & {};
 type InsCall = Ins & TraceCall;
 type InsSleep = Ins & TraceSleep;
 type InsCondition = Ins & TraceCondition;
+type InsSignal = Ins & TraceSignalCall;
 
 type AllOps = "call" | "sleep" | "condition" | "end" | "start" | "signal";
 
@@ -62,6 +64,7 @@ interface IBlock {
   cancel();
   resume();
   canContinue(): boolean;
+  canFastForwardInReplay(): boolean;
 }
 
 const INT_SYM = Symbol("INT_SYM");
@@ -69,7 +72,7 @@ const INT_SYM = Symbol("INT_SYM");
 class BlockSleep implements IBlock {
   private _def: Deferred = new Deferred();
 
-  constructor(public itm: Trace, public activeAfter: Date) {}
+  constructor(public itm: TraceSleep, public activeAfter: Date) {}
 
   getType() {
     return EBlockType.sleep;
@@ -90,6 +93,10 @@ class BlockSleep implements IBlock {
   resume() {
     this._def.resolve();
   }
+
+  canFastForwardInReplay() {
+    return this.canContinue();
+  }
 }
 
 class BlockCondition implements IBlock {
@@ -98,7 +105,7 @@ class BlockCondition implements IBlock {
   isConditionPassed: boolean;
 
   constructor(
-    public itm: Trace,
+    public itm: InsCondition,
     public deadlineAt: Date,
     private checkFunc: () => boolean
   ) {}
@@ -125,18 +132,24 @@ class BlockCondition implements IBlock {
   resume() {
     this._def.resolve();
   }
+
+  canFastForwardInReplay() {
+    return false;
+  }
 }
+
+type RuntimeContextMode = "replay" | "run";
 
 export class RuntimeContext {
   private traces: Trace[] = [];
   private instructions: Ins[] = [];
   private program: Promise<any>;
   private asyncLocalStorage = new AsyncLocalStorage();
-  private mode: "replay" | "run";
   private isProgramEnd: boolean;
 
   // For check replay done
   private insIndex = new Map<Ins, boolean>();
+  private replaySignals: InsSignal[] = [];
   private replayFinishedProgram = false;
 
   // Block
@@ -147,9 +160,19 @@ export class RuntimeContext {
   private signals: Map<string, Function> = new Map();
   private queries: Map<string, Function> = new Map();
 
+  private _mode: RuntimeContextMode;
+  private get mode(): RuntimeContextMode {
+    return this._mode;
+  }
+  private set mode(v: RuntimeContextMode) {
+    loggerVerbose(`mode: ${v}`);
+    this._mode = v;
+  }
+
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
     this.instructions = [];
+    this.replaySignals = [];
     this.traces = [];
     this.signals.clear();
     this.queries.clear();
@@ -168,17 +191,38 @@ export class RuntimeContext {
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
-    this.mode = "replay";
-    this.traces = traces;
-    this.signals.clear();
-    this.queries.clear();
-    this._cleanupBlocks();
-    this._loadInstructions(traces);
+    try {
+      this.mode = "replay";
+      this.traces = traces;
+      this.replaySignals = [];
+      this.signals.clear();
+      this.queries.clear();
+      this._cleanupBlocks();
+      this._loadInstructions(traces);
 
-    this.runDefered = new Deferred();
-    this._loadProgram(f);
+      this.runDefered = new Deferred();
+      this._loadProgram(f);
 
-    await Promise.race([this.program, this.runDefered.promise]);
+      await Promise.race([this.program, this.runDefered.promise]);
+
+      if (this.isEnd()) return;
+
+      await this._replaySimulateSignal();
+    } finally {
+      this.mode = "run";
+    }
+  }
+
+  private async _replaySimulateSignal() {
+    if (this.replaySignals.length === 0) return;
+    // check signal and continue
+    let signalItm = this.replaySignals.shift();
+    while (signalItm) {
+      loggerVerbose(`replay: simulate signal ${signalItm.callBy}`);
+      this.replaySignalCall(signalItm);
+      await this.continue();
+      signalItm = this.replaySignals.shift();
+    }
   }
 
   async continue(): Promise<boolean> {
@@ -356,6 +400,8 @@ export class RuntimeContext {
   }
 
   callSignal(name: string, ...i: any): Function {
+    if (this.mode !== "run") throw new Error("callSignal. Run mode restricted");
+
     const traceItem: TraceSignalCall = {
       opt: "signal",
       child: [],
@@ -373,6 +419,13 @@ export class RuntimeContext {
       traceItem.isSuccess = false;
       throw error;
     }
+  }
+
+  private replaySignalCall(traceItm: TraceSignalCall) {
+    if (this.mode !== "replay")
+      throw new Error("callSignal. replay mode restricted");
+    const f = this.signals.get(traceItm.callBy);
+    f(...traceItm.arguments);
   }
 
   //-------------------------------------------------------------------
@@ -507,7 +560,7 @@ export class RuntimeContext {
         this._cleanupBlocks();
       } catch (error) {
         if (error === INT_SYM) return;
-        logger(error);
+        loggerError(error);
         throw error;
       }
     };
@@ -520,6 +573,7 @@ export class RuntimeContext {
     this.replayFinishedProgram = false;
     const doIndex = (ins: Ins) => {
       if (ins.opt === "end") this.replayFinishedProgram = true;
+      if (ins.opt === "signal") this.replaySignals.push(ins as InsSignal);
       this.insIndex.set(ins, true);
       for (const it of ins.child) {
         doIndex(it);
@@ -537,7 +591,11 @@ export class RuntimeContext {
     this.blocks.push(block);
 
     // replay finished program -> no need to block
-    if (this.mode === "replay" && this.replayFinishedProgram) {
+    if (
+      this.mode === "replay" &&
+      this.replayFinishedProgram &&
+      block.canFastForwardInReplay()
+    ) {
       block.resume();
       return;
     }
