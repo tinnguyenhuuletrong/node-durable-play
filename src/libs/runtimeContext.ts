@@ -8,14 +8,12 @@ import { clone } from "./utils";
 const logger = debug("utils");
 const waitMs = promisify(setTimeout);
 
-type Ins = Trace & {
-  visited?: boolean;
-};
+type Ins = Trace & {};
 type InsCall = Ins & TraceCall;
 type InsSleep = Ins & TraceSleep;
 type InsCondition = Ins & TraceCondition;
 
-type AllOps = "call" | "sleep" | "condition" | "end" | "start";
+type AllOps = "call" | "sleep" | "condition" | "end" | "start" | "signal";
 
 export type Trace = {
   opt: AllOps;
@@ -38,6 +36,13 @@ export type TraceCondition = Trace & {
   deadlineAt: number;
   isFinish: boolean;
   response?: boolean;
+};
+export type TraceSignalCall = Trace & {
+  opt: "signal";
+  arguments: any;
+  isSuccess: boolean;
+  response?: any;
+  error?: any;
 };
 export type TraceEnd = Trace & {
   opt: "end";
@@ -140,12 +145,14 @@ export class RuntimeContext {
 
   // Signal
   private signals: Map<string, Function> = new Map();
+  private queries: Map<string, Function> = new Map();
 
   async runAsNew(f: (ctx: RuntimeContext) => Promise<any>) {
     this.mode = "run";
     this.instructions = [];
     this.traces = [];
     this.signals.clear();
+    this.queries.clear();
     this._cleanupBlocks();
 
     this.runDefered = new Deferred();
@@ -156,6 +163,7 @@ export class RuntimeContext {
 
   destroy() {
     this.signals.clear();
+    this.queries.clear();
     this._cleanupBlocks();
   }
 
@@ -163,6 +171,7 @@ export class RuntimeContext {
     this.mode = "replay";
     this.traces = traces;
     this.signals.clear();
+    this.queries.clear();
     this._cleanupBlocks();
     this._loadInstructions(traces);
 
@@ -172,19 +181,27 @@ export class RuntimeContext {
     await Promise.race([this.program, this.runDefered.promise]);
   }
 
-  async continue() {
-    if (this.blocks.length === 0) return;
-    const runable = this.blocks.filter((itm) => itm.canContinue());
+  async continue(): Promise<boolean> {
+    if (this.blocks.length === 0) return false;
+    const runable = [];
+    const nextBlock = [];
+    for (const it of this.blocks) {
+      if (it.canContinue()) runable.push(it);
+      else nextBlock.push(it);
+    }
 
     this.mode = "run";
     this.runDefered = new Deferred();
-    this.blocks = this.blocks.filter((itm) => !itm.canContinue());
+    this.blocks = nextBlock;
+
+    if (runable.length === 0) return false;
 
     for (const it of runable) {
       it.resume();
     }
 
     await Promise.race([this.program, this.runDefered.promise]);
+    return true;
   }
 
   getTraces() {
@@ -264,7 +281,16 @@ export class RuntimeContext {
     this._addBlock(block);
 
     await block.wait();
-    return !!insItem.response;
+
+    // replay for finished condition
+    if (insItem.isFinish) {
+      return !!insItem.response;
+    }
+
+    // resume -> finished condition
+    insItem.isFinish = true;
+    insItem.response = block.isConditionPassed;
+    return block.isConditionPassed;
   }
 
   async sleep(callId: string, x: number | string) {
@@ -311,6 +337,17 @@ export class RuntimeContext {
   //    query read data. no state change
   //-------------------------------------------------------------------
 
+  withQuery<A extends ReadonlyArray<unknown>, R>(
+    name: string,
+    f: (...params: A) => R
+  ) {
+    this.queries.set(name, f);
+  }
+
+  callQuery(name: string, ...i: any): any {
+    return this.queries.get(name)(...i);
+  }
+
   withSignal<A extends ReadonlyArray<unknown>, R>(
     name: string,
     f: (...params: A) => R
@@ -319,11 +356,23 @@ export class RuntimeContext {
   }
 
   callSignal(name: string, ...i: any): Function {
-    //TODO: next add hoc to record Trace log for replay
-    //  Link it with block
-    //    Replay -> auto resolve block with
-    //        timeout or signal resolve
-    return this.signals.get(name)(...i);
+    const traceItem: TraceSignalCall = {
+      opt: "signal",
+      child: [],
+      callBy: name,
+      arguments: [...i],
+      isSuccess: true,
+    };
+    this._appendTrace(traceItem, name);
+    try {
+      let res = this.signals.get(name)(...i);
+      traceItem.response = res;
+      return res;
+    } catch (error) {
+      traceItem.error = error?.message;
+      traceItem.isSuccess = false;
+      throw error;
+    }
   }
 
   //-------------------------------------------------------------------
@@ -335,7 +384,7 @@ export class RuntimeContext {
     f: (...params: A) => Promise<R>,
     opts: wrapActionOpts = {}
   ) {
-    return async (callId: string, ...i: A) => {
+    return async (callId: string, ...i: A): Promise<R> => {
       if (this.mode === "run")
         return this.wrapActionForRun(name, f, callId, ...i);
       else return this.wrapActionForReplay(name, f, callId, ...i);
@@ -353,7 +402,7 @@ export class RuntimeContext {
     if (insItem.isSuccess) {
       if (insItem.child.length > 0) {
         const res = this.asyncLocalStorage.run(insItem, () => f(...i));
-        return res;
+        return insItem.response as R;
       } else {
         return insItem.response as R;
       }
@@ -414,7 +463,6 @@ export class RuntimeContext {
     }
     if (!ins) throw new Error("Fatal error. Instruction missmatch.");
 
-    ins.visited = true;
     this.insIndex.delete(ins);
 
     switch (expectedOp) {
@@ -478,7 +526,7 @@ export class RuntimeContext {
       }
     };
 
-    this.instructions = clone(traces);
+    this.instructions = traces;
 
     for (const it of this.instructions) {
       doIndex(it);

@@ -8,7 +8,7 @@
     "dev:play2": "ts-node play/_play_promise_race_all.ts",
     "dev:play3": "ts-node play/_play_condition.ts",
     "build": "tsc",
-    "test": "jest"
+    "test": "ts-node play/_play_all.ts"
   },
   "author": "",
   "license": "ISC",
