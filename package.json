@@ -1,6 +1,6 @@
 {
-  "name": "durable-process",
-  "version": "1.0.0",
+  "name": "node-durable-play",
+  "version": "0.0.1",
   "description": "",
   "main": "index.js",
   "scripts": {
