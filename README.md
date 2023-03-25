@@ -35,8 +35,13 @@ Playing with the idea of durable execution in Node.js. Inspired by [https://temp
 
 •  [x] Query: read data only.
 
-•  [ ] Continue playing with more complex examples like loops.
+•  [x] Continue playing with more complex examples like loops.
 
 •  [ ] Monthly subscription flow.
 
 •  [ ] Better interface for TraceLog storage (abstract storage backend).
+
+
+## Bugs
+
+- [ ] _play_loop.ts:63 // TODO: why need to clone ?

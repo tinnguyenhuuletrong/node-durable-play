@@ -13,5 +13,10 @@ async function main() {
   console.log("_play_condition");
   console.log("-----------------------------------------------");
   await import("./_play_condition");
+
+  console.log("-----------------------------------------------");
+  console.log("_play_loop");
+  console.log("-----------------------------------------------");
+  await import("./_play_loop");
 }
 main();

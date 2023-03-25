@@ -9,7 +9,9 @@ const loggerError = debug("node-durable:error");
 const loggerVerbose = debug("node-durable:verbose");
 const waitMs = promisify(setTimeout);
 
-type Ins = Trace & {};
+type Ins = Trace & {
+  nextIns?: Ins;
+};
 type InsCall = Ins & TraceCall;
 type InsSleep = Ins & TraceSleep;
 type InsCondition = Ins & TraceCondition;
@@ -95,6 +97,16 @@ class BlockSleep implements IBlock {
   }
 
   canFastForwardInReplay() {
+    const sleepIns = this.itm as InsSleep;
+
+    // i am the last one -> can't fast forward
+    if (!sleepIns?.nextIns) return false;
+
+    // If next ins === signal -> should stop fastForward
+    //  Replay function will simulate a signal call -> continue replay
+    const hasSignalNext = sleepIns?.nextIns?.opt === "signal";
+    if (hasSignalNext) return false;
+
     return this.canContinue();
   }
 }
@@ -150,7 +162,6 @@ export class RuntimeContext {
   // For check replay done
   private insIndex = new Map<Ins, boolean>();
   private replaySignals: InsSignal[] = [];
-  private replayFinishedProgram = false;
 
   // Block
   private blocks: IBlock[] = [];
@@ -399,7 +410,7 @@ export class RuntimeContext {
     this.signals.set(name, f);
   }
 
-  callSignal(name: string, ...i: any): Function {
+  callSignal(name: string, ...i: any) {
     if (this.mode !== "run") throw new Error("callSignal. Run mode restricted");
 
     const traceItem: TraceSignalCall = {
@@ -570,20 +581,22 @@ export class RuntimeContext {
 
   private _loadInstructions(traces: Trace[]) {
     this.insIndex.clear();
-    this.replayFinishedProgram = false;
-    const doIndex = (ins: Ins) => {
-      if (ins.opt === "end") this.replayFinishedProgram = true;
+
+    const doIndex = (ins: Ins, index: number, parents: Ins[]) => {
       if (ins.opt === "signal") this.replaySignals.push(ins as InsSignal);
       this.insIndex.set(ins, true);
-      for (const it of ins.child) {
-        doIndex(it);
+      ins.nextIns = parents[index + 1];
+      for (let i = 0; i < ins.child.length; i++) {
+        const it = ins.child[i];
+        doIndex(it, i, it.child);
       }
     };
 
     this.instructions = traces;
 
-    for (const it of this.instructions) {
-      doIndex(it);
+    for (let i = 0; i < this.instructions.length; i++) {
+      const it = this.instructions[i];
+      doIndex(it, i, this.instructions);
     }
   }
 
@@ -591,11 +604,7 @@ export class RuntimeContext {
     this.blocks.push(block);
 
     // replay finished program -> no need to block
-    if (
-      this.mode === "replay" &&
-      this.replayFinishedProgram &&
-      block.canFastForwardInReplay()
-    ) {
+    if (this.mode === "replay" && block.canFastForwardInReplay()) {
       block.resume();
       return;
     }
