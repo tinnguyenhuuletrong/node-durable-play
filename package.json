@@ -8,6 +8,7 @@
     "dev:play2": "ts-node play/_play_promise_race_all.ts",
     "dev:play3": "ts-node play/_play_condition.ts",
     "dev:play4": "ts-node play/_play_loop.ts",
+    "dev:play5": "ts-node play/_play_monthly_sub.ts",
     "build": "tsc",
     "test": "ts-node play/_play_all.ts"
   },

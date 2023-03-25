@@ -100,6 +100,35 @@ write data -> has opLogs
 1. flow with for / white loop : https://learn.temporal.io/tutorials/typescript/subscriptions/#end-result
 2. flow ecommerce with cancel
 
+  user click Buy -> flow 
+
+  process = condition(() => !cancel, '5 seconds')
+  if(!process) return
+
+
+  await decBalance(x)
+  await deliverItm(y)
+  
+3. flow monthly sub
+
+  usages = []
+  isActive = true
+
+  signal('add usage')
+  signal('cancel')
+
+  while(isActive) {
+    await sleep(nextCycle)
+    log(usages)
+    charge()
+  }
+
+  if(usage.length > 0) { 
+    log(usages)
+    charge()
+  }
+
+
 // Next +
 // Retry + timeout per run
 
