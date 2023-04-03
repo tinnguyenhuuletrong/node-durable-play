@@ -202,6 +202,11 @@ export class RuntimeContext {
   }
 
   async replay(traces: Trace[], f: (ctx: RuntimeContext) => Promise<any>) {
+    // Replay need
+    // 1. replay
+    // 2. simulate signal
+    // 3. continue replay
+
     try {
       this.mode = "replay";
       this.traces = traces;
@@ -214,11 +219,19 @@ export class RuntimeContext {
       this.runDefered = new Deferred();
       this._loadProgram(f);
 
+      loggerVerbose("replay start");
+
       await Promise.race([this.program, this.runDefered.promise]);
+
+      loggerVerbose("replay end");
 
       if (this.isEnd()) return;
 
+      loggerVerbose("replay simulate signal start");
+
       await this._replaySimulateSignal();
+
+      loggerVerbose(`replay simulate signal end. ${this.replaySignals.length}`);
     } finally {
       this.mode = "run";
     }
@@ -228,15 +241,22 @@ export class RuntimeContext {
     if (this.replaySignals.length === 0) return;
     // check signal and continue
     let signalItm = this.replaySignals.shift();
+
+    // TODO
+    // Need define dependecy and order between call + replay action
+    //  Code below only try to pop and simulate one by one. Which is not 100% correct
+
     while (signalItm) {
-      loggerVerbose(`replay: simulate signal ${signalItm.callBy}`);
+      loggerVerbose(
+        `replay: simulate signal ${signalItm.callBy}. replaySignals length ${this.replaySignals.length}`
+      );
       this.replaySignalCall(signalItm);
-      await this.continue();
+      await this.continue("replay");
       signalItm = this.replaySignals.shift();
     }
   }
 
-  async continue(): Promise<boolean> {
+  async continue(mode: RuntimeContextMode = "run"): Promise<boolean> {
     if (this.blocks.length === 0) return false;
     const runable = [];
     const nextBlock = [];
@@ -245,7 +265,7 @@ export class RuntimeContext {
       else nextBlock.push(it);
     }
 
-    this.mode = "run";
+    this.mode = mode;
     this.runDefered = new Deferred();
     this.blocks = nextBlock;
 
@@ -525,7 +545,10 @@ export class RuntimeContext {
     } else {
       ins = this.instructions.find((itm) => itm.callBy === callId);
     }
-    if (!ins) throw new Error("Fatal error. Instruction missmatch.");
+    if (!ins)
+      throw new Error(
+        `Fatal error. Instruction missmatch. ${callId} and expected ${expectedOp}`
+      );
 
     this.insIndex.delete(ins);
 

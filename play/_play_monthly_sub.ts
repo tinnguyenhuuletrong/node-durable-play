@@ -88,6 +88,7 @@ async function startFlow() {
 
 async function restoreFlow(traces: Trace[]) {
   const ctx = new RuntimeContext();
+
   await ctx.replay(traces, cycleChargeFlow);
 
   _ctx = ctx;
